@@ -4,6 +4,16 @@ A lightweight git client for Lite XL. Track changes, stage/unstage, commit,
 pull, push, and manage branches and remotes — all from inside the editor.
 Built for minimum mouse/touchpad movement: most actions are one keystroke.
 
+## Screenshots
+<img width="781" height="965" alt="image" src="https://github.com/user-attachments/assets/cb510f5d-7ba4-4aec-bb85-b57a3cbf817b" />
+
+<img width="290" height="226" alt="image" src="https://github.com/user-attachments/assets/4f40e7fb-11d4-49d6-a899-d485a37a85e5" />
+
+<img width="558" height="360" alt="image" src="https://github.com/user-attachments/assets/bd393638-653a-494a-a2a7-d9da8b4cc50b" />
+
+
+
+
 ## Features
 
 - **Git panel** (toggle with `ctrl+alt+shift+g`) opening as a right-hand
@@ -131,15 +141,13 @@ All behavior is configurable through `config.plugins.git` in your
 config.plugins.git.activate   = "ctrl+alt+shift+g"  -- toggle panel
 config.plugins.git.scan_rate = 2                    -- refresh interval (s)
 config.plugins.git.gutter_diff = true               -- gutter markers
--- colors are {r, g, b, a} tables; common.color() parses a hex string
-config.plugins.git.color_modified  = common.color("#e6a800")  -- orange
-config.plugins.git.color_untracked = common.color("#c9b400")  -- yellow
-config.plugins.git.color_staged    = common.color("#4ec94e")  -- green
+config.plugins.git.color_modified  = "#e6a800"       -- orange
+config.plugins.git.color_untracked = "#c9b400"       -- yellow
+config.plugins.git.color_staged    = "#4ec94e"       -- green
 ```
 
-Colors (modified / untracked / staged / gutter added / gutter modified) are
-also editable live from the **Settings → Git** GUI using the built-in color
-picker — changes apply immediately without restarting.
+A **Settings** GUI entry ("Git") is also provided for the scan rate and
+gutter-diff toggle.
 
 ## License
 
