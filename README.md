@@ -9,7 +9,7 @@ Built for minimum mouse/touchpad movement: most actions are one keystroke.
 
 <img width="290" height="226" alt="image" src="https://github.com/user-attachments/assets/4f40e7fb-11d4-49d6-a899-d485a37a85e5" />
 
-<img width="558" height="360" alt="image" src="https://github.com/user-attachments/assets/bd393638-653a-494a-a2a7-d9da8b4cc50b" />
+<img width="593" height="351" alt="image" src="https://github.com/user-attachments/assets/05ee1ff4-2acc-4627-91ae-3637bad2480f" />
 
 
 
