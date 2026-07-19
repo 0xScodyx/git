@@ -59,6 +59,7 @@ end
 local keymap = require("core.keymap")
 local View = require("core.view")
 local DocView = require("core.docview")
+local Doc = require("core.doc")
 local StatusView = require("core.statusview")
 
 --------------------------------------------------------------------------------
@@ -501,6 +502,48 @@ local function toggle_dir(path)
 	build_tree()
 end
 
+-- Stage the given paths, then commit them. If prompt is true, ask for the
+-- message (prefilled with default_msg); otherwise commit instantly.
+-- Defined before its callers (git_context_menu, commit commands) because Lua
+-- local functions are only visible after their declaration.
+local function stage_and_commit(paths, default_msg, prompt)
+	local function go(msg)
+		if not msg or msg == "" then
+			return
+		end
+		core.add_thread(function()
+			for _, p in ipairs(paths) do
+				git_exec({ "git", "add", "--", p })
+			end
+			-- commit only the given pathspecs so unrelated staged files stay staged
+			local args = { "git", "commit", "-m", msg, "--" }
+			for _, p in ipairs(paths) do
+				args[#args + 1] = p
+			end
+			local out, code = git_exec(args)
+			refresh_state()
+			if git.clear_diff_cache then
+				git.clear_diff_cache()
+			end
+			core.redraw = true
+			if code == 0 then
+				core.log("git: committed " .. #paths .. " file(s)")
+			else
+				core.error("git: commit failed:\n" .. (out or ""))
+			end
+		end)
+	end
+	if prompt then
+		core.command_view:enter("Commit message", {
+			submit = go,
+			text = default_msg or "",
+			select_text = true,
+		})
+	else
+		go(default_msg)
+	end
+end
+
 -- Right-click context menu: commit / stage a file or a whole directory.
 local function git_context_menu(row)
 	local file_paths = {}
@@ -568,7 +611,7 @@ local function git_context_menu(row)
 							git.clear_diff_cache()
 						end
 						core.redraw = true
-					end)
+						end)
 				end,
 				text = default_msg_for(file_paths[1]),
 				select_text = true,
@@ -860,46 +903,6 @@ local function run_commit(msg, extra_args)
 			core.error("git: commit failed:\n" .. (out or ""))
 		end
 	end)
-end
-
--- Stage the given paths, then commit them. If prompt is true, ask for the
--- message (prefilled with default_msg); otherwise commit instantly.
-local function stage_and_commit(paths, default_msg, prompt)
-	local function go(msg)
-		if not msg or msg == "" then
-			return
-		end
-		core.add_thread(function()
-			for _, p in ipairs(paths) do
-				git_exec({ "git", "add", "--", p })
-			end
-			-- commit only the given pathspecs so unrelated staged files stay staged
-			local args = { "git", "commit", "-m", msg, "--" }
-			for _, p in ipairs(paths) do
-				args[#args + 1] = p
-			end
-			local out, code = git_exec(args)
-			refresh_state()
-			if git.clear_diff_cache then
-				git.clear_diff_cache()
-			end
-			core.redraw = true
-			if code == 0 then
-				core.log("git: committed " .. #paths .. " file(s)")
-			else
-				core.error("git: commit failed:\n" .. (out or ""))
-			end
-		end)
-	end
-	if prompt then
-		core.command_view:enter("Commit message", {
-			submit = go,
-			text = default_msg or "",
-			select_text = true,
-		})
-	else
-		go(default_msg)
-	end
 end
 
 -- The file path of the currently active document, relative to project dir.
@@ -1307,115 +1310,135 @@ core.status_view:add_item({
 --------------------------------------------------------------------------------
 
 if config.plugins.git.gutter_diff then
-	local cache = {} -- doc -> { [line] = "added"|"modified" }
+	-- Accurate, live gutter markers computed entirely in memory.
+	--
+	-- The trick: we load the file's committed content once (`git show
+	-- HEAD:path`) and keep it as a per-line list. On every edit we diff the
+	-- live buffer lines against that HEAD snapshot -- in memory, no git call,
+	-- no disk read. This makes markers:
+	--   * appear instantly as you type (a changed line gets a marker)
+	--   * DISAPPEAR instantly when you revert a line back to its HEAD text
+	--   * survive saves (we never compare against the file on disk)
+	--   * clear correctly after a commit (clear_diff_cache reloads the
+	--     HEAD snapshot, which now matches the buffer -> no markers)
+	--
+	-- Drawing is done in DocView:draw_line_gutter (so it coexists with the
+	-- built-in gutter). If you also run `gitdiff_highlight`, disable it to
+	-- avoid two markers on the same line.
+	local snapshots = setmetatable({}, { __mode = "k" }) -- doc -> { head_lines={}, in_repo=bool }
+	local marks_cache = setmetatable({}, { __mode = "k" }) -- doc -> { [line]="added"|"modified" }
 
-	-- Parse a `git diff -U0 HEAD` output into per-line markers. Compared
-	-- against the last commit (HEAD), NOT the working tree, so markers stay
-	-- visible after a save and only disappear once the file is committed.
-	-- Runs only inside a coroutine (background thread).
-	local function compute_diff(doc)
-		local file = doc.filename
-		if not file or not system.get_file_info(file) then
-			return {}
+	-- Read the committed (HEAD) version of a doc as a list of lines. Runs
+	-- inside a coroutine (background thread) only.
+	local function load_head_snapshot(doc)
+		if not doc or not doc.abs_filename then
+			return { in_repo = false }
 		end
-		local out = git_exec({ "git", "diff", "--no-color", "-U0", "HEAD", "--", file })
-		local marks = {}
-		for hunk in out:gmatch("@@[^\n]*\n[^\n]*") do
-			-- header: "@@ -a,b +c,d @@"  (c = first new-file line number)
-			local start = hunk:match("@@ %-%d+,?%d* %+(%d+)")
-			start = tonumber(start)
-			if start then
-				local body = hunk:match("\n(.+)$")
-				if body then
-					if body:sub(1, 1) == "+" then
-						-- pure addition (no '-' line in the hunk)
-						marks[start] = "added"
-					else
-						-- line was removed on the left -> it is a modification
-						marks[start] = "modified"
-					end
-				end
-			end
+		local dir = doc.abs_filename:match("(.*" .. PATHSEP .. ")")
+		if not dir then return { in_repo = false } end
+		local rel = git_exec({ "git", "-C", dir, "ls-files", "--full-name", "--error-unmatch", doc.abs_filename })
+		rel = rel:match("[^\n]*")
+		if not rel or rel == "" then
+			return { in_repo = false } -- untracked or not a repo
 		end
-		-- Untracked files: git diff HEAD shows nothing, so diff them against
-		-- /dev/null via intent-to-add so new files also get a green marker.
-		if not next(marks) then
-			local untracked = git_exec({ "git", "diff", "--no-color", "-U0", "--no-index", "/dev/null", file })
-			for hunk in untracked:gmatch("@@[^\n]*\n[^\n]*") do
-				local start = hunk:match("@@ %-%d+,?%d* %+(%d+)")
-				start = tonumber(start)
-				if start and hunk:match("\n%+(.+)") then
-					marks[start] = "added"
-				end
-			end
+		local content = git_exec({ "git", "-C", dir, "show", "HEAD:" .. rel })
+		local head_lines = {}
+		for line in (content .. "\n"):gmatch("(.-)\n") do
+			head_lines[#head_lines + 1] = line
 		end
-		return marks
+		return { in_repo = true, head_lines = head_lines }
 	end
 
-	-- Clear the diff cache (e.g. after a commit) so markers disappear.
-	function git.clear_diff_cache()
-		cache = {}
-	end
-
-	-- Compute (lazily, once) the diff for a doc and store it. Never runs on
-	-- save, so markers persist across edits until the file is committed.
+	-- Recompute the HEAD snapshot in the background (on open / after commit).
 	local pending = {}
-	local function ensure_diff(doc)
-		if cache[doc] ~= nil then
-			return
-		end -- already computed (or empty)
-		if pending[doc] then
-			return
-		end -- already scheduled
+	local recompute_marks -- forward declaration
+	local function update_snapshot(doc)
+		if not doc or not doc.abs_filename then return end
+		if pending[doc] then return end
 		pending[doc] = true
 		core.add_thread(function()
-			local ok, marks = pcall(compute_diff, doc)
+			local ok, snap = pcall(load_head_snapshot, doc)
 			pending[doc] = nil
 			if ok then
-				cache[doc] = marks
+				snapshots[doc] = snap
+				recompute_marks(doc)
 			end
 			core.redraw = true
 		end)
 	end
 
-	local draw_overlay = DocView.draw_overlay
-	function DocView:draw_overlay(...)
-		local res = draw_overlay(self, ...)
-		if not config.plugins.git.gutter_diff then
-			return res
+	-- Diff the live buffer against the HEAD snapshot, purely in memory.
+	function recompute_marks(doc)
+		local snap = snapshots[doc]
+		if not snap or not snap.in_repo then
+			marks_cache[doc] = nil
+			return
 		end
-		local doc = self.doc
-		if not doc or not doc.filename then
-			return res
-		end
-		if not git.available then
-			return res
-		end
-
-		if cache[doc] == nil then
-			ensure_diff(doc) -- schedule compute; markers show up next frames
-			return res
-		end
-		local marks = cache[doc]
-
-		local lh = self:get_line_height()
-		local gw = self:get_gutter_width()
-		for line = 1, #doc.lines do
-			if marks[line] then
-				local _, oy = self:get_line_screen_position(line)
-				local color = marks[line] == "added"
-						and git_color("g_added", config.plugins.git.color_gutter_added, style.accent)
-					or git_color("g_modified", config.plugins.git.color_gutter_modified, style.accent)
-				if type(color) == "table" then
-					renderer.draw_rect(self.position.x, oy, math.max(2, gw * 0.15), lh, color)
-				end
+		local head = snap.head_lines
+		local marks = {}
+		local n = #doc.lines
+		for i = 1, n do
+			local cur = doc.lines[i]:gsub("\n$", "")
+			local base = head[i]
+			if base == nil then
+				marks[i] = "added"
+			elseif cur ~= base then
+				marks[i] = "modified"
 			end
 		end
-		return res
+		marks_cache[doc] = marks
 	end
 
-	-- NOTE: we do NOT reset the cache on save/text change. A file differs from
-	-- HEAD until it is committed, so markers must remain until then.
+	-- Called by commit commands: reload HEAD so committed lines lose markers.
+	function git.clear_diff_cache()
+		for doc in pairs(snapshots) do
+			update_snapshot(doc)
+		end
+		for doc in pairs(marks_cache) do
+			if not snapshots[doc] then update_snapshot(doc) end
+		end
+	end
+
+	-- Draw our marker in the gutter, keeping the built-in gutter intact.
+	local old_draw_line_gutter = DocView.draw_line_gutter
+	function DocView:draw_line_gutter(line, x, y, width)
+		old_draw_line_gutter(self, line, x, y, width)
+		if not config.plugins.git.gutter_diff or not git.available then
+			return
+		end
+		local doc = self.doc
+		if not doc then return end
+		local marks = marks_cache[doc]
+		if not marks then return end
+		local m = marks[line]
+		if not m then return end
+		local color = m == "added"
+			and git_color("g_added", config.plugins.git.color_gutter_added, style.accent)
+			or git_color("g_modified", config.plugins.git.color_gutter_modified, style.accent)
+		if type(color) == "table" then
+			local lh = self:get_line_height()
+			renderer.draw_rect(self.position.x, y, math.max(2, width * 0.18), lh, color)
+		end
+	end
+
+	-- Recompute markers live on every edit (in-memory diff, instant + exact).
+	local old_on_text_change = Doc.on_text_change
+	function Doc:on_text_change(type)
+		if snapshots[self] then
+			recompute_marks(self)
+			core.redraw = true
+		elseif self.abs_filename and not pending[self] then
+			update_snapshot(self)
+		end
+		return old_on_text_change(self, type)
+	end
+
+	-- Load the HEAD snapshot in the background when a file is opened.
+	local old_doc_load = Doc.load
+	function Doc:load(...)
+		old_doc_load(self, ...)
+		update_snapshot(self)
+	end
 end
 
 --------------------------------------------------------------------------------
