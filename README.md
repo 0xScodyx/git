@@ -131,13 +131,15 @@ All behavior is configurable through `config.plugins.git` in your
 config.plugins.git.activate   = "ctrl+alt+shift+g"  -- toggle panel
 config.plugins.git.scan_rate = 2                    -- refresh interval (s)
 config.plugins.git.gutter_diff = true               -- gutter markers
-config.plugins.git.color_modified  = "#e6a800"       -- orange
-config.plugins.git.color_untracked = "#c9b400"       -- yellow
-config.plugins.git.color_staged    = "#4ec94e"       -- green
+-- colors are {r, g, b, a} tables; common.color() parses a hex string
+config.plugins.git.color_modified  = common.color("#e6a800")  -- orange
+config.plugins.git.color_untracked = common.color("#c9b400")  -- yellow
+config.plugins.git.color_staged    = common.color("#4ec94e")  -- green
 ```
 
-A **Settings** GUI entry ("Git") is also provided for the scan rate and
-gutter-diff toggle.
+Colors (modified / untracked / staged / gutter added / gutter modified) are
+also editable live from the **Settings → Git** GUI using the built-in color
+picker — changes apply immediately without restarting.
 
 ## License
 
