@@ -32,6 +32,30 @@ local common = require("core.common")
 local command = require("core.command")
 local config = require("core.config")
 local style = require("core.style")
+
+-- Resolve configured colors lazily into a cache so a color is always a table
+-- even if the user overrode it with something odd. The cache is reset from a
+-- config_spec `on_apply` hook whenever a color is changed in the Settings GUI,
+-- so the new value takes effect immediately.
+local color_cache = {}
+local function git_color(name, color, fallback)
+	if color_cache[name] then
+		return color_cache[name]
+	end
+	local c
+	-- The Settings GUI "color" widget stores values as {r,g,b,a} tables, but a
+	-- user may still override the value in user/init.lua as a hex string, so we
+	-- accept both shapes. Fall back to a safe color if neither parses.
+	if type(color) == "table" then
+		c = color
+	else
+		local ok, v = pcall(common.color, color)
+		c = (ok and type(v) == "table") and v or fallback
+	end
+	color_cache[name] = c
+	return c
+end
+
 local keymap = require("core.keymap")
 local View = require("core.view")
 local DocView = require("core.docview")
@@ -116,12 +140,13 @@ config.plugins.git = common.merge({
 	-- How often (seconds) to refresh git state in the background.
 	scan_rate = 2,
 
-	-- Colors for status markers.
-	color_modified = "#e6a800", -- orange  (modified)
-	color_untracked = "#c9b400", -- yellow  (untracked / ?)
-	color_staged = "#4ec94e", -- green   (staged)
-	color_gutter_added = "#4ec94e",
-	color_gutter_modified = "#e6a800",
+	-- Colors for status markers (stored as {r,g,b,a} tables, as the Settings
+	-- GUI color widget provides). common.color parses the hex defaults.
+	color_modified = common.color("#e6a800"), -- orange  (modified)
+	color_untracked = common.color("#c9b400"), -- yellow  (untracked / ?)
+	color_staged = common.color("#4ec94e"), -- green   (staged)
+	color_gutter_added = common.color("#4ec94e"),
+	color_gutter_modified = common.color("#e6a800"),
 
 	-- Draw the per-line gutter diff markers in the editor.
 	gutter_diff = true,
@@ -143,27 +168,49 @@ config.plugins.git = common.merge({
 			type = "toggle",
 			default = true,
 		},
+		{
+			label = "Color: Modified",
+			description = "Color used for modified files and the per-line gutter marker.",
+			path = "color_modified",
+			type = "color",
+			default = common.color("#e6a800"),
+			on_apply = function() color_cache = {} end,
+		},
+		{
+			label = "Color: Untracked",
+			description = "Color used for untracked files (the '?' marker).",
+			path = "color_untracked",
+			type = "color",
+			default = common.color("#c9b400"),
+			on_apply = function() color_cache = {} end,
+		},
+		{
+			label = "Color: Staged",
+			description = "Color used for staged files and ahead/behind counts.",
+			path = "color_staged",
+			type = "color",
+			default = common.color("#4ec94e"),
+			on_apply = function() color_cache = {} end,
+		},
+		{
+			label = "Color: Gutter Added",
+			description = "Color of the gutter marker on added lines.",
+			path = "color_gutter_added",
+			type = "color",
+			default = common.color("#4ec94e"),
+			on_apply = function() color_cache = {} end,
+		},
+		{
+			label = "Color: Gutter Modified",
+			description = "Color of the gutter marker on modified lines.",
+			path = "color_gutter_modified",
+			type = "color",
+			default = common.color("#e6a800"),
+			on_apply = function() color_cache = {} end,
+		},
 	},
 }, config.plugins.git)
 
--- Resolve configured colors. We resolve lazily (at first use) into a local
--- cache via a helper, so a color is always a table even if the configured
--- value was overridden to something odd by the user's config.
-local color_cache = {}
-local function git_color(name, hex, fallback)
-	if color_cache[name] then
-		return color_cache[name]
-	end
-	local c
-	local ok, v = pcall(common.color, hex)
-	if ok and type(v) == "table" then
-		c = v
-	else
-		c = fallback
-	end
-	color_cache[name] = c
-	return c
-end
 -- exposed on style for convenience / external use
 style.git_modified = git_color("modified", config.plugins.git.color_modified, style.accent)
 style.git_untracked = git_color("untracked", config.plugins.git.color_untracked, style.dim)
